@@ -8,7 +8,7 @@
 
 ## 它能做什么
 
-**手机端（闪念小抄 App）**
+**手机端（闪念小抄 App）[去下载](https://github.com/WenHuaYiYang/Snapnotes-andriod/releases/tag/stable)**
 
 - **编辑器**：在手机上编写、整理你的知识点 JSON，分科目分条目管理。
 - **内置文件管理器**：直接浏览本机 JSON 文件，也支持从微信 / QQ / 文件管理器「打开方式 → 闪念小抄」推送。

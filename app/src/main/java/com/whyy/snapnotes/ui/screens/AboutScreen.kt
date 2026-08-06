@@ -66,7 +66,7 @@ private const val REF_PROJECT_URL = "https://github.com/youshen2/com.bandbbs.ebo
 private const val REF_PROJECT_NAME_ANDROID = "弦电子书-手环（com.bandbbs.ebook）"
 private const val REF_PROJECT_URL_ANDROID = "https://github.com/youshen2/com.bandbbs.ebook"
 /** 底部版本标签（彩蛋藏在这条的长按上；不带任何 ❤ 装饰）。 */
-private const val APP_VERSION_LABEL = "版本 1.0"
+private const val APP_VERSION_LABEL = "版本 1.0.1"
 // ──────────────────────────────────────────────────────────────────────
 
 @Composable

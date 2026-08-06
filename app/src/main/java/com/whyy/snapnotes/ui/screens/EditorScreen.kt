@@ -265,6 +265,7 @@ private fun SubjectCard(
                         EntryCard(
                             entry = entry,
                             formulaRenderer = formulaRenderer,
+                            idWarning = entryIdWarning(subject.name, entry, subject.entries),
                             onRemoveEntry = { onRemoveEntry(entryIndex) },
                             onUpdateEntry = { onUpdateEntry(entryIndex, it) }
                         )
@@ -291,6 +292,7 @@ private fun SubjectCard(
 private fun EntryCard(
     entry: EditorEntry,
     formulaRenderer: FormulaPngRenderer?,
+    idWarning: String?,
     onRemoveEntry: () -> Unit,
     onUpdateEntry: (EditorEntry) -> Unit
 ) {
@@ -357,6 +359,14 @@ private fun EntryCard(
                         singleLine = true,
                         useLabelAsPlaceholder = false
                     )
+                    if (idWarning != null) {
+                        Text(
+                            text = idWarning,
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.error,
+                            modifier = Modifier.padding(start = 4.dp)
+                        )
+                    }
                     TextField(
                         value = e.desc,
                         onValueChange = { onUpdateEntry(e.copy(desc = it)) },
@@ -573,6 +583,51 @@ private fun FormulaPreview(
                 }
             }
         }
+    }
+}
+
+/**
+ * 手环内置知识点：各科目独立编号（语文1-68、数学1-12、英语1-8、物理1-15、
+ * 化学1-10、生物1-11、历史1-6、地理1-6、政治1-7、信息技术1-16，合计159条）。
+ * 用户给内置科目补充内容时，编号落在该科目内置区间内会被手环跳过（不覆盖）。
+ */
+private val BUILTIN_SUBJECT_ID_RANGES = mapOf(
+    "语文" to 1..68,
+    "数学" to 1..12,
+    "英语" to 1..8,
+    "物理" to 1..15,
+    "化学" to 1..10,
+    "生物" to 1..11,
+    "历史" to 1..6,
+    "地理" to 1..6,
+    "政治" to 1..7,
+    "信息技术" to 1..16,
+)
+
+/**
+ * 计算某条目的编号冲突提示：
+ * - 若科目名是手环内置科目，编号落在该科目内置区间内：推送后同编号条目不会被覆盖更新；
+ * - 同科目内编号重复：手环按编号合并，重复条目不会新增。
+ * 空编号不提示；两条可叠加。返回 null 表示无冲突。
+ */
+private fun entryIdWarning(
+    subjectName: String,
+    entry: EditorEntry,
+    entries: List<EditorEntry>
+): String? {
+    val id = entry.id.trim()
+    if (id.isEmpty()) return null
+    val idNum = id.toIntOrNull() ?: return null
+    val builtinRange = BUILTIN_SUBJECT_ID_RANGES[subjectName.trim()]
+    val inBuiltinRange = builtinRange?.contains(idNum) == true
+    val duplicated = entries.count { it.id.trim() == id } > 1
+    if (!inBuiltinRange && !duplicated) return null
+    return buildString {
+        if (inBuiltinRange) {
+            append("编号落在内置「$subjectName」已占用区间（${builtinRange!!.first}-${builtinRange.last}）内，推送后同编号条目不会被覆盖更新")
+        }
+        if (inBuiltinRange && duplicated) append("；")
+        if (duplicated) append("该科目内编号重复，重复条目不会新增")
     }
 }
 

@@ -231,10 +231,10 @@ class AmadeusChat(
                 "chat_new" -> onChatNew(obj)
                 "chat_request" -> scope.launch { onRequest(obj) }
                 "reply_ack" -> onReplyAck(obj)
-                else -> Log.d(TAG, "ignore chat type: $payload")
+                else -> Log.d(TAG, "ignore chat type")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "parse chat inbound fail: $payload", e)
+            Log.e(TAG, "parse chat inbound fail", e)
         }
     }
 
@@ -261,7 +261,7 @@ class AmadeusChat(
             return
         }
         val cfg = configFlow.value
-        Log.d(TAG, "chat_request recv sessionId=$sid text=${text.take(40)} enabled=${cfg.isReady}")
+        Log.d(TAG, "chat_request recv sessionId=$sid enabled=${cfg.isReady}")
         if (!cfg.isReady) {
             // 未启用或未配齐 key/model：发 reply_error 让手环清态，不再走 watchdog 超时。
             replyError(sid, if (!cfg.enabled) "Amadeus 未启用" else "Amadeus 未配置 API Key / Model")
@@ -478,7 +478,7 @@ class AmadeusChat(
                 (obj["choices"] as? JsonArray)?.firstOrNull()
                     ?.jsonObject?.get("delta")?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
             } catch (e: Exception) {
-                Log.w(TAG, "skip unparseable sse line: $payload")
+                Log.w(TAG, "skip unparseable sse line")
                 null
             }
             if (delta.isNullOrEmpty()) continue

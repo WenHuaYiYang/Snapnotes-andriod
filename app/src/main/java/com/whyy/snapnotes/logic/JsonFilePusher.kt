@@ -109,10 +109,10 @@ class JsonFilePusher(private val conn: InterHandshake) {
                         val success = json.decodeFromString<FileMessagesFromDevice.Success>(payload)
                         Log.d(TAG, "success: ${success.message}")
                     }
-                    else -> Log.d(TAG, "ignore file type=${header.type}: $payload")
+                    else -> Log.d(TAG, "ignore file type=${header.type}")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "parse file response fail: $payload", e)
+                Log.e(TAG, "parse file response fail", e)
                 failTransfer("手环回执解析失败: ${e.message}")
             }
         }
@@ -160,7 +160,7 @@ class JsonFilePusher(private val conn: InterHandshake) {
             // 缓存最新值，供 getStorageInfo() 同步返回当前值（不靠 await 回包，避免超时丢包竞态）。
             storageDeferred = CompletableDeferred<BandStorageInfoData>().apply { complete(data) }
         } catch (e: Exception) {
-            Log.e(TAG, "parse storage_info fail: $payload", e)
+            Log.e(TAG, "parse storage_info fail", e)
         }
     }
 
@@ -267,7 +267,7 @@ class JsonFilePusher(private val conn: InterHandshake) {
     private suspend fun runTransfer(startMessage: String, statusPrefix: String = "") {
         // StartTransfer 下发加超时：InterHandshake.sendMessage 在握手 promise 卡死时
         // 会永不 complete，裸 await 会让 pushFile 永久持锁、busy 永不复位，UI 停 0% 无日志。
-        Log.e(TAG, "runTransfer send start msg, waiting ready: $startMessage")
+        Log.e(TAG, "runTransfer send start msg, waiting ready")
         sendWithTimeout(startMessage, FIRST_PACKET_TIMEOUT_MS)
         Log.e(TAG, "start message sent ok, waiting ready ...")
 

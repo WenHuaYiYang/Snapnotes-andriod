@@ -40,8 +40,7 @@ open class Interconn(context: Context) {
 
     open val onMessageListener = OnMessageReceivedListener { _, message ->
         val messageStr = message.decodeToString()
-        // E 级埋线：手环入站包若到这一行说明 BLE 接收通道通；不到则 listener 根本没触发。
-        Log.e("Interconn", "PROBE recv inbound: $messageStr")
+        // 入站包分发入口（不打印消息内容：BLE 消息可能含聊天文本/文件数据，防 logcat 泄漏）。
         onRawMessageReceived()
         try {
             val msg = json.decodeFromString<Message>(messageStr)
@@ -56,7 +55,7 @@ open class Interconn(context: Context) {
             // ② 再按 tag 分发（__hs__ / file / ...）
             msg.tag?.let { onMessage[it]?.invoke(messageStr) }
         } catch (e: Exception) {
-            Log.e("Interconn", "msg parse fail: $messageStr", e)
+            Log.e("Interconn", "msg parse fail", e)
         }
     }
 
@@ -138,7 +137,6 @@ open class Interconn(context: Context) {
     }
 
     open fun sendMessage(message: String): CompletableDeferred<Unit> {
-        Log.d("Interconn >>>", message)
         return CompletableDeferred<Unit>().apply {
             val node = currentNode
             if (node == null) {

@@ -49,15 +49,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.whyy.snapnotes.ui.utils.BuiltinFileManagerPaths
 import com.whyy.snapnotes.ui.utils.ImportPathPreset
+import com.whyy.snapnotes.ui.viewmodel.MAX_IMPORT_FILE_BYTES
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Checkbox
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
@@ -275,6 +278,12 @@ private fun onPickUri(
         }
         if (!cache.exists() || cache.length() == 0L) {
             Toast.makeText(context, "无法读取所选文件", Toast.LENGTH_SHORT).show()
+            onBackClick()
+            return
+        }
+        if (cache.length() > MAX_IMPORT_FILE_BYTES) {
+            cache.delete()
+            Toast.makeText(context, "文件超过 50MB 上限", Toast.LENGTH_SHORT).show()
             onBackClick()
             return
         }
@@ -795,6 +804,12 @@ private fun FileManagerPage(
                                                     contentDescription = "File",
                                                     tint = if (isSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onBackgroundVariant,
                                                     modifier = Modifier.padding(end = 16.dp)
+                                                )
+                                            },
+                                            endActions = {
+                                                Checkbox(
+                                                    state = ToggleableState(isSelected),
+                                                    onClick = null
                                                 )
                                             },
                                             onClick = {

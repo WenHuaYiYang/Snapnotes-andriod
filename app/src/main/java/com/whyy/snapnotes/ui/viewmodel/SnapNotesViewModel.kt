@@ -47,7 +47,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
 import java.io.File
+import java.io.InputStream
 import kotlin.time.Duration.Companion.milliseconds
+
+/** 导入/推送文件大小上限（50MB），防止超大文件整读进内存导致 OOM。 */
+const val MAX_IMPORT_FILE_BYTES = 50L * 1024 * 1024
 
 
 
@@ -58,6 +62,10 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
         // VM 销毁（App 真正退完）：停常驻前台服务，不留无效待命通知。释放 active 网络申请防泄漏。
         runCatching { amadeusChat?.releaseActiveNetwork() }
         runCatching { ForegroundTransferService.stopService(getApplication()) }
+        // 草稿兜底落盘（防抖期内退出也能保住最新编辑）。
+        if (_editorSubjects.value.isNotEmpty()) {
+            runCatching { editorDraftFile.writeText(getEditorJsonString()) }
+        }
     }
 
     private val prefs = application.getSharedPreferences("snapnotes_prefs", Context.MODE_PRIVATE)
@@ -220,6 +228,9 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
     private val _editorLoadError = MutableStateFlow<String?>(null)
     val editorLoadError = _editorLoadError.asStateFlow()
 
+    private val _showDraftRestorePrompt = MutableStateFlow(false)
+    val showDraftRestorePrompt = _showDraftRestorePrompt.asStateFlow()
+
     fun dismissEditorLoadError() {
         _editorLoadError.value = null
     }
@@ -228,11 +239,17 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val historyFile by lazy { File(getApplication<Application>().filesDir, "snapnotes_history.json") }
 
+    /** 编辑器草稿文件：内容自动保存，杀进程后重进编辑页可恢复。 */
+    private val editorDraftFile by lazy { File(getApplication<Application>().filesDir, "snapnotes_editor_draft.json") }
+
     private val _pushHistory = MutableStateFlow<List<PushRecord>>(emptyList())
     val pushHistory = _pushHistory.asStateFlow()
 
     private val _pendingHistoryDelete = MutableStateFlow<PushRecord?>(null)
     val pendingHistoryDelete = _pendingHistoryDelete.asStateFlow()
+
+    private val _pendingHistoryBatchDelete = MutableStateFlow<List<PushRecord>?>(null)
+    val pendingHistoryBatchDelete = _pendingHistoryBatchDelete.asStateFlow()
 
     /** 本轮正在推送的文件名与字节，推送成功后据此落缓存并记一条历史。 */
     private var pendingPushFileName: String? = null
@@ -240,6 +257,20 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
 
     init {
         loadHistory()
+        // 编辑器草稿自动保存：内容变化后防抖落盘（有内容才写，避免空草稿覆盖旧稿）。
+        viewModelScope.launch {
+            var saveJob: Job? = null
+            _editorSubjects.collect { subjects ->
+                if (subjects.isEmpty()) return@collect
+                saveJob?.cancel()
+                saveJob = viewModelScope.launch {
+                    delay(800)
+                    withContext(Dispatchers.IO) {
+                        runCatching { editorDraftFile.writeText(getEditorJsonString()) }
+                    }
+                }
+            }
+        }
     }
 
     private fun loadHistory() {
@@ -322,8 +353,7 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
     val debugMessage = _debugMessage.asStateFlow()
 
     fun showDebug(msg: String) {
-        // 顺便也打印一下，方便你以后查
-        android.util.Log.d("PushDebug", msg)
+        // 调试消息只走 StateFlow 展示，不写 logcat（消息可能含笔记/公式内容）。
         _debugMessage.value = msg
     }
 
@@ -351,6 +381,30 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
         persistHistory()
     }
 
+    fun requestHistoryBatchDelete(records: List<PushRecord>) {
+        _pendingHistoryBatchDelete.value = records
+    }
+
+    fun cancelHistoryBatchDelete() {
+        _pendingHistoryBatchDelete.value = null
+    }
+
+    /** 批量删除历史：删对应本地副本文件 + 清清单。不触碰手环数据。 */
+    fun confirmHistoryBatchDelete() {
+        val records = _pendingHistoryBatchDelete.value ?: return
+        _pendingHistoryBatchDelete.value = null
+        if (records.isEmpty()) return
+        val ids = records.map { it.id }.toSet()
+        runCatching {
+            records.forEach { r ->
+                val f = File(getApplication<Application>().filesDir, r.cacheFileName)
+                if (f.exists()) f.delete()
+            }
+        }
+        _pushHistory.update { cur -> cur.filterNot { it.id in ids } }
+        persistHistory()
+    }
+
     /** 从历史记录重新推送（等价于把同一份 JSON 再次推给手环走 merge 链路）。 */
     fun repushRecord(record: PushRecord) {
         viewModelScope.launch {
@@ -358,6 +412,9 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
                 val cacheFile = File(getApplication<Application>().filesDir, record.cacheFileName)
                 val bytes = withContext(Dispatchers.IO) {
                     if (!cacheFile.exists()) throw IllegalArgumentException("本地缓存已被删除")
+                    if (cacheFile.length() > MAX_IMPORT_FILE_BYTES) {
+                        throw IllegalArgumentException("缓存文件超过 50MB 上限，无法重新推送")
+                    }
                     cacheFile.readBytes()
                 }
                 val text = bytes.toString(Charsets.UTF_8)
@@ -891,7 +948,34 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
     /* ──────────── 编辑器 ──────────── */
 
     fun openEditor() {
+        // 编辑页无内容且存在草稿时，提示恢复上次未提交的编辑。
+        if (_editorSubjects.value.isEmpty()) {
+            _showDraftRestorePrompt.value = runCatching {
+                editorDraftFile.exists() && editorDraftFile.readText().isNotBlank()
+            }.getOrDefault(false)
+        }
         _screen.value = AppScreen.Editor
+    }
+
+    /** 恢复舞台草稿：解析草稿文件 → 载入编辑器 → 关闭提示。 */
+    fun restoreEditorDraft() {
+        _showDraftRestorePrompt.value = false
+        viewModelScope.launch {
+            val subjects = withContext(Dispatchers.IO) {
+                runCatching { parseEditorSubjects(editorDraftFile.readText()) }.getOrNull()
+            }
+            if (subjects == null) {
+                _editorLoadError.value = "草稿文件已损坏，无法恢复"
+                return@launch
+            }
+            _editorSubjects.value = subjects
+        }
+    }
+
+    /** 丢弃草稿：删除草稿文件并关闭提示。 */
+    fun discardEditorDraft() {
+        _showDraftRestorePrompt.value = false
+        runCatching { editorDraftFile.delete() }
     }
 
     fun openEditorFromFile(uri: Uri) {
@@ -899,28 +983,7 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
             try {
                 val bytes = withContext(Dispatchers.IO) { readAndValidateJson(uri) }
                 val text = bytes.toString(Charsets.UTF_8)
-                val root = org.json.JSONObject(text)
-                val subjects = mutableListOf<EditorSubject>()
-                root.keys().forEach { subjectName ->
-                    val arr = root.getJSONArray(subjectName)
-                    val entries = mutableListOf<EditorEntry>()
-                    for (i in 0 until arr.length()) {
-                        val obj = arr.getJSONObject(i)
-                        entries += EditorEntry(
-                            id = obj.optString("id", ""),
-                            title = obj.optString("title", ""),
-                            desc = obj.optString("desc", ""),
-                            raw = obj.optString("raw", ""),
-                            points = obj.optJSONArray("points")?.let { pArr ->
-                                List(pArr.length()) { pArr.optString(it, "") }
-                            } ?: emptyList(),
-                            formulas = obj.optJSONArray("formulas")?.let { fArr ->
-                                List(fArr.length()) { fArr.optString(it, "") }
-                            } ?: emptyList()
-                        )
-                    }
-                    subjects += EditorSubject(name = subjectName, entries = entries)
-                }
+                val subjects = parseEditorSubjects(text)
                 _editorSubjects.value = subjects
                 _editorLoadError.value = null
                 _screen.value = AppScreen.Editor
@@ -929,6 +992,33 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
                 _editorLoadError.value = e.message ?: "无法加载该 JSON 文件"
             }
         }
+    }
+
+    /** 把「知识点 JSON 文本」解析为编辑器科目列表。与 getEditorJsonString() 互逆。 */
+    private fun parseEditorSubjects(text: String): List<EditorSubject> {
+        val root = org.json.JSONObject(text)
+        val subjects = mutableListOf<EditorSubject>()
+        root.keys().forEach { subjectName ->
+            val arr = root.getJSONArray(subjectName)
+            val entries = mutableListOf<EditorEntry>()
+            for (i in 0 until arr.length()) {
+                val obj = arr.getJSONObject(i)
+                entries += EditorEntry(
+                    id = obj.optString("id", ""),
+                    title = obj.optString("title", ""),
+                    desc = obj.optString("desc", ""),
+                    raw = obj.optString("raw", ""),
+                    points = obj.optJSONArray("points")?.let { pArr ->
+                        List(pArr.length()) { pArr.optString(it, "") }
+                    } ?: emptyList(),
+                    formulas = obj.optJSONArray("formulas")?.let { fArr ->
+                        List(fArr.length()) { fArr.optString(it, "") }
+                    } ?: emptyList()
+                )
+            }
+            subjects += EditorSubject(name = subjectName, entries = entries)
+        }
+        return subjects
     }
 
     /**
@@ -1298,7 +1388,7 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
                         it.copy(statusText = "渲染公式图 ${i + 1}/${plans.size} · ${plan.subject}#${plan.id}")
                     }
                     val latexList = plan.formulas.map { raw -> RawToLatexConverter.convert(raw) }
-                    Log.e("SnapNotesViewModel", "ALERT rendering formula ${i + 1}/${plans.size}: ${plan.subject}#${plan.id} latex=$latexList")
+                    Log.e("SnapNotesViewModel", "ALERT rendering formula ${i + 1}/${plans.size}: ${plan.subject}#${plan.id}")
                     val png = renderer.render(latexList)
                     if (png == null) {
                         formulaPhaseFailCount++
@@ -1544,10 +1634,23 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
             val path = uri.path ?: throw IllegalArgumentException("无法解析文件路径")
             val file = File(path)
             if (!file.exists()) throw IllegalArgumentException("文件不存在")
+            if (file.length() > MAX_IMPORT_FILE_BYTES) {
+                throw IllegalArgumentException("文件超过 50MB 上限，无法导入")
+            }
             file.readBytes()
         } else {
             val resolver = getApplication<Application>().contentResolver
-            resolver.openInputStream(uri)?.use { it.readBytes() }
+            // provider 若报 SIZE 先比大小，超限直接拒绝，避免超大文件整读进内存。
+            var size = -1L
+            runCatching {
+                resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { c ->
+                    if (c.moveToFirst() && !c.isNull(0)) size = c.getLong(0)
+                }
+            }
+            if (size > MAX_IMPORT_FILE_BYTES) {
+                throw IllegalArgumentException("文件超过 50MB 上限，无法导入")
+            }
+            resolver.openInputStream(uri)?.use { it.readBounded(MAX_IMPORT_FILE_BYTES) }
                 ?: throw IllegalArgumentException("无法读取文件")
         }
         if (bytes.isEmpty()) throw IllegalArgumentException("文件为空")
@@ -1572,6 +1675,24 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun dismissSnackbar() {
         _snackbarMessage.value = null
+    }
+
+    /**
+     * 从输入流读取，最多读 [maxBytes]；超限抛 [IllegalArgumentException]，
+     * 防止 content provider 不报 SIZE 时把超大流整读进内存。
+     */
+    private fun InputStream.readBounded(maxBytes: Long): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(8192)
+        var total = 0L
+        while (true) {
+            val n = read(buf)
+            if (n < 0) break
+            total += n
+            if (total > maxBytes) throw IllegalArgumentException("文件超过 50MB 上限，无法导入")
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
 }

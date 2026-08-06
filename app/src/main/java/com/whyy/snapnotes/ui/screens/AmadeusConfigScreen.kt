@@ -284,6 +284,6 @@ private fun AmadeusTextEditDialog(
 /** 可弹窗编辑的文本项；集中管理标题/标签/提示文案，避免页面内散落字符串。 */
 private enum class EditField(val title: String, val label: String, val hint: String) {
     BaseUrl("Base URL", "API 根地址", "留空走厂商默认，如 https://api.deepseek.com"),
-    ApiKey("API Key", "密钥", "明文存手机端 prefs（与其它设置一致）"),
+    ApiKey("API Key", "密钥", "请输入API密钥"),
     Model("Model", "模型名", "如 deepseek-chat")
 }

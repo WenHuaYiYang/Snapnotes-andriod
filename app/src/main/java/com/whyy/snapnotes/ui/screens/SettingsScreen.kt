@@ -18,6 +18,7 @@ import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.extended.Folder
+import top.yukonga.miuix.kmp.icon.extended.Info
 import top.yukonga.miuix.kmp.icon.extended.Reset
 import top.yukonga.miuix.kmp.preference.WindowDropdownPreference
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -151,6 +152,14 @@ fun SettingsScreen(
                     BasicComponent(
                         title = "关于",
                         summary = "开发者信息、参考项目",
+                        startAction = {
+                            top.yukonga.miuix.kmp.basic.Icon(
+                                imageVector = MiuixIcons.Info,
+                                contentDescription = "关于",
+                                tint = top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme.primary,
+                                modifier = Modifier.padding(end = 16.dp)
+                            )
+                        },
                         onClick = onOpenAbout
                     )
                 }

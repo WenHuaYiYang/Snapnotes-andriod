@@ -8,9 +8,11 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,7 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -41,6 +43,7 @@ import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
+import top.yukonga.miuix.kmp.basic.Surface
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
@@ -52,17 +55,11 @@ import top.yukonga.miuix.kmp.utils.scrollEndHaptic
 
 // ── 开发者与参考项目信息 ──────────────────────────────────────────────
 private const val DEV_NAME = "文华逸洋"
-/** QQ 号（数字字符串），点击复制到剪贴板。 */
-private const val CONTACT_QQ = "664249113"
-/** GitHub 用户名（不含 @ 与域名），点击跳转 github.com/<[user]>；与昵称一致。 */
-private const val CONTACT_GITHUB = "WenHuaYiYang"
-/** GitHub 主页完整链接（用于「其他渠道」/参考项目等需要完整 url 的条目）。 */
-private const val GITHUB_URL = "https://github.com/WenHuaYiYang"
-/** 邮箱，点击复制到剪贴板。 */
 private const val CONTACT_EMAIL = "zcsjwhdh@163.com"
-/** 其他渠道：哔哩哔哩个人空间，点击跳转。 */
-private const val CONTACT_OTHER = "哔哩哔哩"
-private const val CONTACT_OTHER_URL = "https://space.bilibili.com/1927172224"
+private const val PARTNER_NAME = "Vultra"
+private const val PARTNER_EMAIL = "racwr52q@163.com"
+/** 本项目开源仓库。 */
+private const val PROJECT_REPO_URL = "https://github.com/WenHuaYiYang/Snapnotes-andriod"
 /** 参考项目。 */
 private const val REF_PROJECT_NAME = "弦电子书-安卓（com.bandbbs.ebook-android）"
 private const val REF_PROJECT_URL = "https://github.com/youshen2/com.bandbbs.ebook-android"
@@ -125,48 +122,39 @@ fun AboutScreen(
                         modifier = Modifier.padding(horizontal = 12.dp),
                         insideMargin = PaddingValues(0.dp)
                     ) {
-                        // 头像 + 昵称居中展示在卡片顶部，下方紧接联系方式列表。
-                        Column(
+                        // 两位开发者头像 + 昵称并排居中展示，下方各自一个可复制的邮箱。
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(top = 20.dp, bottom = 12.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
+                            horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
-                            Image(
-                                painter = painterResource(R.drawable.avatar),
-                                contentDescription = "头像",
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(96.dp)
-                                    .clip(CircleShape)
+                            DevCard(
+                                name = DEV_NAME,
+                                email = CONTACT_EMAIL,
+                                avatarRes = R.drawable.avatar,
+                                onEmailClick = { copyToClipboard("邮箱", CONTACT_EMAIL) }
                             )
-                            Spacer(Modifier.height(10.dp))
-                            Text(
-                                text = DEV_NAME,
-                                style = MiuixTheme.textStyles.title2,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MiuixTheme.colorScheme.onSurface
+                            DevCard(
+                                name = PARTNER_NAME,
+                                email = PARTNER_EMAIL,
+                                avatarRes = R.drawable.avatar_vultra,
+                                onEmailClick = { copyToClipboard("邮箱", PARTNER_EMAIL) }
                             )
                         }
+                    }
+                }
+                // ── 项目开源 ──
+                item {
+                    SmallTitle(text = "项目开源")
+                    Card(
+                        modifier = Modifier.padding(horizontal = 12.dp),
+                        insideMargin = PaddingValues(0.dp)
+                    ) {
                         BasicComponent(
-                            title = "QQ 号",
-                            summary = CONTACT_QQ,
-                            onClick = { copyToClipboard("QQ 号", CONTACT_QQ) }
-                        )
-                        BasicComponent(
-                            title = "GitHub",
-                            summary = "@$CONTACT_GITHUB",
-                            onClick = { openUrl(GITHUB_URL) }
-                        )
-                        BasicComponent(
-                            title = "邮箱",
-                            summary = CONTACT_EMAIL,
-                            onClick = { copyToClipboard("邮箱", CONTACT_EMAIL) }
-                        )
-                        BasicComponent(
-                            title = "其他渠道",
-                            summary = CONTACT_OTHER,
-                            onClick = { openUrl(CONTACT_OTHER_URL) }
+                            title = "本项目开源地址",
+                            summary = "github.com/WenHuaYiYang/Snapnotes-andriod",
+                            onClick = { openUrl(PROJECT_REPO_URL) }
                         )
                     }
                 }
@@ -219,5 +207,49 @@ fun AboutScreen(
             show = showEgg,
             onDismiss = { showEgg = false }
         )
+    }
+}
+
+/** 单个开发者卡片：圆角矩形头像 + 昵称 + 可点击复制的邮箱。 */
+@Composable
+private fun DevCard(
+    name: String,
+    email: String,
+    avatarRes: Int,
+    onEmailClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Image(
+            painter = painterResource(avatarRes),
+            contentDescription = "头像",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+                .size(64.dp)
+                .clip(RoundedCornerShape(22.dp))
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            text = name,
+            style = MiuixTheme.textStyles.title3,
+            fontWeight = FontWeight.SemiBold,
+            color = MiuixTheme.colorScheme.onSurface
+        )
+        Spacer(Modifier.height(6.dp))
+        Surface(
+            color = MiuixTheme.colorScheme.surfaceContainer,
+            shape = RoundedCornerShape(16.dp),
+            onClick = onEmailClick
+        ) {
+            Text(
+                text = email,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.primary,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+            )
+        }
     }
 }

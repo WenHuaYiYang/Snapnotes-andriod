@@ -67,16 +67,8 @@ class FormulaPngRenderer(private val activityContext: Context) {
     private val fixedContext: Context by lazy { createFixedDensityContext(activityContext) }
 
     private var webView: WebView? = null
-    /** 供 JS 把测量/截图结果同步回传到 Kotlin（JS Bridge，比 evaluateJavascript 回调可靠）。 */
-    private var bridgeCallback: ((String) -> Unit)? = null
-
-    /** JS Bridge：JS 里 `SnapBridge.onResult(json)` 同步回调（任意线程，需切回主线程）。 */
-    private inner class SnapBridge : Any() {
-        @android.webkit.JavascriptInterface
-        fun onResult(json: String) {
-            bridgeCallback?.invoke(json)
-        }
-    }
+    /** 供 JS 把测量/截图结果写入 `window.__snapResult`，Kotlin 侧用 evaluateJavascript 轮询读取
+     *  （不用 addJavascriptInterface，避免把可注入的 JS 桥暴露给页面）。 */
 
     /**
      * 把多条 LaTeX 公式渲染成一张 PNG（垂直堆叠）。
@@ -114,17 +106,17 @@ class FormulaPngRenderer(private val activityContext: Context) {
                     )
                 }
                 if (result == null) {
-                    Log.e(TAG, "renderDetail: measure result null (timeout), latex=$latexList")
+                    Log.e(TAG, "renderDetail: measure result null (timeout)")
                     RenderDetail(null, listOf("渲染超时，请重试"))
                 } else if (result.errors.isNotEmpty()) {
-                    Log.e(TAG, "katex render errors on formulas: ${result.errors}")
+                    Log.e(TAG, "katex render errors on formulas: ${result.errors.size} 条")
                     RenderDetail(null, result.errors)
                 } else {
                     val w = result.w
                     val h = result.h
                     val dataUrl = result.dataUrl
                     if (w <= 0 || h <= 0 || h > MAX_HEIGHT_PX || dataUrl.isNullOrEmpty()) {
-                        Log.e(TAG, "render size/data invalid: ${w}x${h} dataUrl=${dataUrl?.take(40)}")
+                        Log.e(TAG, "render size/data invalid: ${w}x${h}")
                         RenderDetail(null, listOf("渲染尺寸异常，请重试"))
                     } else {
                         val bytes = decodePng(dataUrl)
@@ -152,7 +144,6 @@ class FormulaPngRenderer(private val activityContext: Context) {
         handler.post {
             runCatching { webView?.destroy() }
             webView = null
-            bridgeCallback = null
         }
     }
 
@@ -189,11 +180,13 @@ class FormulaPngRenderer(private val activityContext: Context) {
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.setSupportZoom(false)
-        settings.allowFileAccess = true
+        // 安全加固：禁止 WebView 访问任意 file:// 与 content:// 路径。
+        // 页面所需的 katex/html2canvas 资源仍可通过 file:///android_asset 加载（不受此开关影响）。
+        settings.allowFileAccess = false
+        settings.allowContentAccess = false
         settings.blockNetworkImage = true
         settings.blockNetworkLoads = true
-        // JS Bridge：渲染结果通过 addJavascriptInterface 同步回传，比 evaluateJavascript 回调可靠。
-        webView.addJavascriptInterface(SnapBridge(), "SnapBridge")
+        // 渲染结果不经过 JS 注入桥：JS 写入 window.__snapResult，Kotlin 侧 evaluateJavascript 轮询读取。
         webView.webChromeClient = object : WebChromeClient() {
             override fun onJsAlert(view: WebView, url: String, message: String, result: JsResult): Boolean {
                 result.confirm()
@@ -206,7 +199,8 @@ class FormulaPngRenderer(private val activityContext: Context) {
      * HTML 与手环端 gen_formulas.js 输出对齐：katex.min.css + 白字 + formula-block 垂直堆叠。
      * KaTeX 渲染在页面内联 JS 同步执行（throwOnError），失败条目记入 __snapErrors（含消息）。
      * 字体就绪后（html2canvas 内部也等 fonts.ready）用 html2canvas 把 #wrap 绘制成 canvas，
-     * toDataURL('image/png') 得 base64，连同 w/h/errors 经 SnapBridge 回传。
+     * toDataURL('image/png') 得 base64，连同 w/h/errors 写入 window.__snapResult，
+     * 由 Kotlin 侧 evaluateJavascript 轮询读取（无 JS 注入桥）。
      *
      * @param previewMode true 时 #wrap 收缩到公式内容宽度（inline-block 而非固定 336px）、
      *   字号放大到 36px、canvas 分辨率放大到 2x，手机预览铺满屏宽且清晰；
@@ -253,7 +247,6 @@ var FORMULAS = $jsonArray;
 })();
 function snapWrite(r) {
   try { window.__snapResult = r; } catch (e) {}
-  try { SnapBridge.onResult(r); } catch (e) {}
 }
 function snapCapture() {
   if (window.__snapErrors.length > 0) {
@@ -296,9 +289,10 @@ function snapCapture() {
     private data class MeasureResult(val w: Int, val h: Int, val errors: List<String>, val dataUrl: String?)
 
     /**
-     * 等待页面加载完成后由 JS Bridge 回传测量/截图结果。
-     * html2canvas 异步（canvas 绘制 + base64 编码），结果一次性回传：
-     * 收到后 700ms 静默即认为完成并 finish，超时兜底返回 null。
+     * 等待页面加载完成后读取测量/截图结果。
+     * html2canvas 异步（canvas 绘制 + base64 编码），结果一次性写入 `window.__snapResult`；
+     * 这里从 onPageFinished 后每 150ms 轮询一次（evaluateJavascript 读取，无 JS 注入面），
+     * 拿到有效结果后静默 700ms 视为完成，超时兜底返回 null。
      */
     private suspend fun awaitRenderResult(
         webView: WebView,
@@ -312,12 +306,11 @@ function snapCapture() {
             val finish = { result: MeasureResult? ->
                 if (pending && cont.isActive) {
                     pending = false
-                    bridgeCallback = null
                     cont.resume(result)
                 }
             }
             cont.invokeOnCancellation {
-                handler.post { pending = false; bridgeCallback = null }
+                handler.post { pending = false }
             }
             val scheduleSettle = {
                 settleRunnable?.let { handler.removeCallbacks(it) }
@@ -325,37 +318,32 @@ function snapCapture() {
                 settleRunnable = r
                 handler.postDelayed(r, 700L)
             }
-            bridgeCallback = { json ->
-                handler.post {
-                    if (!pending) return@post
-                    val result = parseMeasure(json)
-                    if (result == null) return@post
-                    latest = result
-                    scheduleSettle()
+            val pollRunnable = object : Runnable {
+                override fun run() {
+                    if (!pending) return
+                    webView.evaluateJavascript("window.__snapResult") { value ->
+                        if (!pending) return@evaluateJavascript
+                        val result = parseMeasure(value)
+                        if (result != null) {
+                            latest = result
+                            scheduleSettle()
+                        } else {
+                            handler.postDelayed(this, 150L)
+                        }
+                    }
                 }
             }
-            // 页面加载兜底：若 JS 始终未回传，等 onPageFinished 后 evaluateJavascript 取一次。
+            // 页面加载兜底：HTML 首帧未完成时读到的都是 null，等 onPageFinished 后再开始轮询。
             webView.webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView?, url: String?) {
-                    handler.postDelayed({
-                        if (pending) {
-                            webView.evaluateJavascript("window.__snapResult") { value ->
-                                if (!pending) return@evaluateJavascript
-                                val result = parseMeasure(value)
-                                if (result != null) {
-                                    latest = result
-                                    scheduleSettle()
-                                }
-                            }
-                        }
-                    }, 150L)
+                    handler.postDelayed(pollRunnable, 150L)
                 }
             }
             startLoad()
-            // 超时兜底：WebView 卡死/JS 永不回传时不能挂死推送流程。
+            // 超时兜底：WebView 卡死/JS 永不写结果时不能挂死推送流程。
             handler.postDelayed({
                 if (pending) {
-                    Log.e(TAG, "formula measure timeout, latest=$latest")
+                    Log.e(TAG, "formula measure timeout")
                     finish(latest)
                 }
             }, FONT_READY_TIMEOUT_MS)
@@ -371,7 +359,7 @@ function snapCapture() {
             text = try {
                 json.parseToJsonElement(text).jsonPrimitive.content
             } catch (e: Exception) {
-                Log.e(TAG, "unquote measure fail: $text", e)
+                Log.e(TAG, "unquote measure fail", e)
                 return null
             }
         }
@@ -389,7 +377,7 @@ function snapCapture() {
                 dataUrl = obj["dataUrl"]?.jsonPrimitive?.contentOrNull
             )
         } catch (e: Exception) {
-            Log.e(TAG, "parse measure fail: $text", e)
+            Log.e(TAG, "parse measure fail", e)
             null
         }
     }

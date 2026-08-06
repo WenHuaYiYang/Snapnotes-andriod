@@ -42,9 +42,11 @@ import com.whyy.snapnotes.logic.FormulaPngRenderer
 import com.whyy.snapnotes.logic.InterHandshake
 import com.whyy.snapnotes.notifications.ForegroundTransferService
 import com.whyy.snapnotes.ui.components.EditorLoadErrorDialog
+import com.whyy.snapnotes.ui.components.DraftRestoreDialog
 import com.whyy.snapnotes.ui.components.ExportNameDialog
 import com.whyy.snapnotes.ui.components.ExportResultDialog
 import com.whyy.snapnotes.ui.components.FirstSyncConfirmDialog
+import com.whyy.snapnotes.ui.components.HistoryBatchDeleteConfirmDialog
 import com.whyy.snapnotes.ui.components.HistoryDeleteConfirmDialog
 import com.whyy.snapnotes.ui.components.VersionIncompatibleDialog
 import com.whyy.snapnotes.ui.screens.AmadeusConfigScreen
@@ -192,8 +194,10 @@ class MainActivity : ComponentActivity() {
                 val versionIncompatible by viewModel.versionIncompatibleState.collectAsState()
                 val editorSubjects by viewModel.editorSubjects.collectAsState()
                 val editorLoadError by viewModel.editorLoadError.collectAsState()
+                val showDraftRestorePrompt by viewModel.showDraftRestorePrompt.collectAsState()
                 val pushHistory by viewModel.pushHistory.collectAsState()
                 val pendingHistoryDelete by viewModel.pendingHistoryDelete.collectAsState()
+                val pendingHistoryBatchDelete by viewModel.pendingHistoryBatchDelete.collectAsState()
                 val useBuiltinFileManager by viewModel.useBuiltinFileManager.collectAsState()
                 val lastExportDirSummary by viewModel.lastExportDirSummary.collectAsState()
                 val exportResult by viewModel.exportResult.collectAsState()
@@ -400,6 +404,7 @@ class MainActivity : ComponentActivity() {
                                                     records = pushHistory,
                                                     onRepush = viewModel::repushRecord,
                                                     onDeleteRequest = viewModel::requestHistoryDelete,
+                                                    onBatchDeleteRequest = viewModel::requestHistoryBatchDelete,
                                                     onEditRecord = viewModel::openEditorFromCache,  // 新增这一行
                                                     modifier = Modifier.fillMaxSize()
                                                 )
@@ -579,10 +584,22 @@ class MainActivity : ComponentActivity() {
                             onCancel = viewModel::cancelFirstSyncConfirm
                         )
 
+                        DraftRestoreDialog(
+                            show = showDraftRestorePrompt,
+                            onRestore = viewModel::restoreEditorDraft,
+                            onDiscard = viewModel::discardEditorDraft
+                        )
+
                         HistoryDeleteConfirmDialog(
                             record = pendingHistoryDelete,
                             onConfirm = viewModel::confirmHistoryDelete,
                             onDismiss = viewModel::cancelHistoryDelete
+                        )
+
+                        HistoryBatchDeleteConfirmDialog(
+                            records = pendingHistoryBatchDelete,
+                            onConfirm = viewModel::confirmHistoryBatchDelete,
+                            onDismiss = viewModel::cancelHistoryBatchDelete
                         )
 
                         VersionIncompatibleDialog(

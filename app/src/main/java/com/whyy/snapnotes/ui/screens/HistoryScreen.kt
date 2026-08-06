@@ -1,6 +1,9 @@
 package com.whyy.snapnotes.ui.screens
 
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -13,26 +16,42 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.whyy.snapnotes.ui.viewmodel.PushRecord
 import com.whyy.snapnotes.ui.viewmodel.toReadableBytes
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Checkbox
+import top.yukonga.miuix.kmp.basic.DropdownImpl
+import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.IconButton
+import top.yukonga.miuix.kmp.basic.ListPopupColumn
+import top.yukonga.miuix.kmp.basic.ListPopupDefaults
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
+import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.basic.rememberTopAppBarState
 import top.yukonga.miuix.kmp.icon.MiuixIcons
+import top.yukonga.miuix.kmp.icon.extended.Close
+import top.yukonga.miuix.kmp.icon.extended.Delete
 import top.yukonga.miuix.kmp.icon.extended.File
 import top.yukonga.miuix.kmp.icon.extended.Info
+import top.yukonga.miuix.kmp.icon.extended.More
+import top.yukonga.miuix.kmp.icon.extended.Refresh
+import top.yukonga.miuix.kmp.icon.extended.SelectAll
+import top.yukonga.miuix.kmp.overlay.OverlayListPopup
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.utils.scrollEndHaptic
@@ -43,21 +62,74 @@ import java.util.Locale
 @Composable
 fun HistoryScreen(
     records: List<PushRecord>,
-    onRepush: (PushRecord) -> Unit,          // 保留重新推送（暂未使用，可备用）
+    onRepush: (PushRecord) -> Unit,
     onDeleteRequest: (PushRecord) -> Unit,
+    onBatchDeleteRequest: (List<PushRecord>) -> Unit,
     onEditRecord: (PushRecord) -> Unit,      // 新增：编辑历史记录
     modifier: Modifier = Modifier
 ) {
     val scrollBehavior = MiuixScrollBehavior(rememberTopAppBarState())
     val timeFmt = remember { SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()) }
 
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+
+    val selectAllState = when {
+        records.isEmpty() -> ToggleableState.Off
+        selectedIds.size == records.size -> ToggleableState.On
+        selectedIds.isEmpty() -> ToggleableState.Off
+        else -> ToggleableState.Indeterminate
+    }
+
     Scaffold(
         modifier = modifier,
         topBar = {
             TopAppBar(
-                title = "推送历史",
-                largeTitle = "推送历史",
-                scrollBehavior = scrollBehavior
+                title = if (selectionMode) "已选 ${selectedIds.size} 条" else "推送历史",
+                largeTitle = if (selectionMode) "已选 ${selectedIds.size} 条" else "推送历史",
+                scrollBehavior = scrollBehavior,
+                actions = {
+                    if (selectionMode) {
+                        Checkbox(
+                            state = selectAllState,
+                            onClick = {
+                                selectedIds = if (selectAllState == ToggleableState.On) {
+                                    emptySet()
+                                } else {
+                                    records.map { it.id }.toSet()
+                                }
+                            }
+                        )
+                        IconButton(
+                            onClick = {
+                                val selected = records.filter { it.id in selectedIds }
+                                if (selected.isNotEmpty()) onBatchDeleteRequest(selected)
+                            }
+                        ) {
+                            Icon(
+                                imageVector = MiuixIcons.Delete,
+                                contentDescription = "批量删除",
+                                tint = if (selectedIds.isEmpty()) {
+                                    MiuixTheme.colorScheme.onSurfaceVariantSummary
+                                } else {
+                                    MiuixTheme.colorScheme.primary
+                                }
+                            )
+                        }
+                        IconButton(
+                            onClick = {
+                                selectionMode = false
+                                selectedIds = emptySet()
+                            }
+                        ) {
+                            Icon(imageVector = MiuixIcons.Close, contentDescription = "退出多选")
+                        }
+                    } else {
+                        IconButton(onClick = { selectionMode = true }) {
+                            Icon(imageVector = MiuixIcons.SelectAll, contentDescription = "多选")
+                        }
+                    }
+                }
             )
         },
         popupHost = {}
@@ -146,13 +218,32 @@ fun HistoryScreen(
                     )
                 }
                 items(records, key = { it.id }) { record ->
+                    val isSelected = record.id in selectedIds
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                            .padding(horizontal = 12.dp, vertical = 4.dp)
+                            .combinedClickable(
+                                onClick = {
+                                    if (selectionMode) {
+                                        selectedIds = if (isSelected) {
+                                            selectedIds - record.id
+                                        } else {
+                                            selectedIds + record.id
+                                        }
+                                    } else {
+                                        onEditRecord(record)
+                                    }
+                                },
+                                onLongClick = {
+                                    // 长按直接进入多选并选中这条记录。
+                                    selectionMode = true
+                                    selectedIds = selectedIds + record.id
+                                }
+                            ),
                         insideMargin = PaddingValues(0.dp),
-                        onClick = { onEditRecord(record) },   // 点击卡片 → 编辑
-                        showIndication = true
+                        onClick = null,
+                        showIndication = false
                     ) {
                         BasicComponent(
                             title = record.fileName,
@@ -172,10 +263,72 @@ fun HistoryScreen(
                                 )
                             },
                             endActions = {
-                                TextButton(
-                                    text = "删除",
-                                    onClick = { onDeleteRequest(record) }   // 删除按钮保留
-                                )
+                                if (selectionMode) {
+                                    Checkbox(
+                                        state = ToggleableState(isSelected),
+                                        onClick = null
+                                    )
+                                } else {
+                                    Box {
+                                        var repushMenuShow by remember { mutableStateOf(false) }
+                                        Icon(
+                                            imageVector = MiuixIcons.More,
+                                            contentDescription = "更多操作",
+                                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                            modifier = Modifier
+                                                .size(20.dp)
+                                                .padding(2.dp)
+                                                .clickable { repushMenuShow = true }
+                                        )
+                                        OverlayListPopup(
+                                            show = repushMenuShow,
+                                            popupPositionProvider = ListPopupDefaults.DropdownPositionProvider,
+                                            alignment = PopupPositionProvider.Align.End,
+                                            onDismissRequest = { repushMenuShow = false },
+                                        ) {
+                                            ListPopupColumn {
+                                                DropdownImpl(
+                                                    item = DropdownItem(
+                                                        text = "重新推送",
+                                                        icon = { m ->
+                                                            Icon(
+                                                                imageVector = MiuixIcons.Refresh,
+                                                                contentDescription = null,
+                                                                modifier = m
+                                                            )
+                                                        }
+                                                    ),
+                                                    optionSize = 2,
+                                                    isSelected = false,
+                                                    index = 0,
+                                                    onSelectedIndexChange = {
+                                                        repushMenuShow = false
+                                                        onRepush(record)
+                                                    }
+                                                )
+                                                DropdownImpl(
+                                                    item = DropdownItem(
+                                                        text = "删除",
+                                                        icon = { m ->
+                                                            Icon(
+                                                                imageVector = MiuixIcons.Delete,
+                                                                contentDescription = null,
+                                                                modifier = m
+                                                            )
+                                                        }
+                                                    ),
+                                                    optionSize = 2,
+                                                    isSelected = false,
+                                                    index = 1,
+                                                    onSelectedIndexChange = {
+                                                        repushMenuShow = false
+                                                        onDeleteRequest(record)
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         )
                     }

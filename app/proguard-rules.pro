@@ -62,3 +62,19 @@
 -keep class androidx.work.** { *; }
 -keep interface androidx.work.** { *; }
 -dontwarn androidx.work.**
+
+############################################
+# 安全：Release 构建移除全部日志调用（防 logcat 泄漏敏感内容）
+############################################
+-assumenosideeffects class android.util.Log {
+    public static int v(java.lang.String, java.lang.String);
+    public static int v(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int d(java.lang.String, java.lang.String);
+    public static int d(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int i(java.lang.String, java.lang.String);
+    public static int i(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int w(java.lang.String, java.lang.String);
+    public static int w(java.lang.String, java.lang.String, java.lang.Throwable);
+    public static int e(java.lang.String, java.lang.String);
+    public static int e(java.lang.String, java.lang.String, java.lang.Throwable);
+}

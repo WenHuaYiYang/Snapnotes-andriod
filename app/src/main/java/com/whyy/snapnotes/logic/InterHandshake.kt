@@ -95,7 +95,7 @@ class InterHandshake(context: Context, val scope: CoroutineScope) : Interconn(co
                     }
                 }
             } catch (e: Exception) {
-                Log.e("Handshake", "handle hs payload fail: $payload", e)
+                Log.e("Handshake", "handle hs payload fail", e)
             }
         }
 

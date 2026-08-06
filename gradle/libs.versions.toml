@@ -13,6 +13,7 @@ junitVersion = "1.1.5"
 espressoCore = "3.5.1"
 ui = "1.11.4"
 okhttp = "4.12.0"
+markdownRenderer = "0.43.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -34,6 +35,8 @@ androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "j
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-compose-ui = { group = "androidx.compose.ui", name = "ui", version.ref = "ui" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+markdown-renderer = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-android", version.ref = "markdownRenderer" }
+markdown-renderer-code = { group = "com.mikepenz", name = "multiplatform-markdown-renderer-code-android", version.ref = "markdownRenderer" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

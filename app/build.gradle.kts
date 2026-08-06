@@ -123,6 +123,8 @@ dependencies {
     implementation("top.yukonga.miuix.kmp:miuix-navigation3-ui-android:0.9.3")
 
     implementation("com.squareup.okhttp3:okhttp:5.4.0")
+implementation(libs.markdown.renderer)
+implementation(libs.markdown.renderer.code)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)

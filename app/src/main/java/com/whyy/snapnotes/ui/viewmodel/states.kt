@@ -67,6 +67,16 @@ data class PushState(
     val errorMessage: String? = null
 )
 
+/**
+ * 一个知识点的公式图推送计划（从 JSON 的含 formulas 条目解析）。
+ * [id] 与手环端 mergeParsedInto 规则一致：条目有 number 类型 id 用之，否则用数组下标 j+1。
+ */
+data class FormulaPlan(
+    val subject: String,
+    val id: Int,
+    val formulas: List<String>
+)
+
 enum class AppScreen {
     Home,
     Settings,

@@ -38,6 +38,7 @@ import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.ui.NavDisplay
 import com.whyy.snapnotes.App
+import com.whyy.snapnotes.logic.FormulaPngRenderer
 import com.whyy.snapnotes.logic.InterHandshake
 import com.whyy.snapnotes.notifications.ForegroundTransferService
 import com.whyy.snapnotes.ui.components.EditorLoadErrorDialog
@@ -119,6 +120,9 @@ class MainActivity : ComponentActivity() {
     private var navigateToFileManagerEntry: (() -> Unit)? = null
     private var showExportName = androidx.compose.runtime.mutableStateOf(false)
 
+    /** 编辑页公式预览渲染器（与推送共用同一实例，复用 WebView 保持输入流畅）。 */
+    private var editorFormulaRenderer: com.whyy.snapnotes.logic.FormulaPngRenderer? = null
+
     private val filePickerLauncher =
         registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
             uri?.let {
@@ -155,6 +159,9 @@ class MainActivity : ComponentActivity() {
         val conn = InterHandshake(this, lifecycleScope)
         (application as App).conn = conn
         viewModel.setConnection(conn)
+        val formulaRenderer = FormulaPngRenderer(this)
+        viewModel.setFormulaRenderer(formulaRenderer)
+        editorFormulaRenderer = formulaRenderer
 
         requestNotificationPermissionIfNeeded()
         observeForegroundServiceState()
@@ -362,6 +369,7 @@ class MainActivity : ComponentActivity() {
 
                                                 1 -> EditorScreen(
                                                     subjects = editorSubjects,
+                                                    formulaRenderer = editorFormulaRenderer,
                                                     onAddSubject = viewModel::addSubject,
                                                     onRemoveSubject = viewModel::removeSubject,
                                                     onUpdateSubjectName = viewModel::updateSubjectName,
@@ -619,6 +627,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             (application as App).conn?.destroy()?.await()
         }
+        editorFormulaRenderer?.release()
         super.onDestroy()
     }
 

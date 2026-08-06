@@ -19,8 +19,10 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.whyy.snapnotes.logic.BandStorageInfoData
 import com.whyy.snapnotes.logic.AmadeusChat
+import com.whyy.snapnotes.logic.FormulaPngRenderer
 import com.whyy.snapnotes.logic.InterHandshake
 import com.whyy.snapnotes.logic.JsonFilePusher
+import com.whyy.snapnotes.logic.RawToLatexConverter
 import com.whyy.snapnotes.notifications.ForegroundTransferService
 import com.xiaomi.xms.wearable.node.Node
 import com.whyy.snapnotes.ui.theme.AppearanceMode
@@ -192,6 +194,22 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
 
     private val _pushState = MutableStateFlow(PushState())
     val pushState = _pushState.asStateFlow()
+
+    /* ──────────── 公式图片推送（startFormula 链路） ──────────── */
+    /** 离屏渲染器（MainActivity 注入；用 Activity context 创建 Dialog+WebView）。 */
+    private var formulaRenderer: FormulaPngRenderer? = null
+    /** JSON 推送成功后解析出的公式图推送计划（subject/id/formulas 列表）。 */
+    private var pendingFormulaPlans: List<FormulaPlan> = emptyList()
+    /** 是否正处于公式图推送阶段（JSON 已成功，正逐条推公式图）。 */
+    private var formulaPhaseActive = false
+    /** 公式图推送阶段累计失败条数（单条失败不整体失败，只汇总提示）。 */
+    private var formulaPhaseFailCount = 0
+    /** 公式图推送协程句柄（用户取消时停掉它）。 */
+    private var formulaPushJob: Job? = null
+
+    fun setFormulaRenderer(renderer: FormulaPngRenderer) {
+        formulaRenderer = renderer
+    }
 
     private val _showFirstSyncConfirm = MutableStateFlow(false)
     val showFirstSyncConfirm = _showFirstSyncConfirm.asStateFlow()
@@ -476,31 +494,53 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
                 }
             }
             onSuccess = { message ->
-                _pushState.update {
-                    it.copy(
-                        progress = 1.0,
-                        statusText = message,
-                        isTransferring = false,
-                        isFinished = true,
-                        isSuccess = true,
-                        errorMessage = null
-                    )
+                // 公式图推送阶段：单条公式图完成的回执，由外层循环统一收尾，这里不处理。
+                if (!formulaPhaseActive) {
+                    _pushState.update {
+                        it.copy(
+                            progress = 1.0,
+                            statusText = message,
+                            isTransferring = false,
+                            isFinished = true,
+                            isSuccess = true,
+                            errorMessage = null
+                        )
+                    }
+                    // 推送成功：记一条历史（手机端记账；手环合并规则同 id 不覆盖，删除本记录不删手环数据）。
+                    pendingPushFileName?.let { name -> pendingPushBytes?.let { bytes ->
+                        recordPushSuccess(name, bytes)
+                        // JSON 已同步：若该文件含公式条目，进入公式图推送阶段；否则直接收尾。
+                        // 必须把 bytes 传进去——recordPushSuccess 会清空 pendingPushBytes。
+                        launchFormulaPushIfAny(bytes)
+                    } }
                 }
-                // 推送成功：记一条历史（手机端记账；手环合并规则同 id 不覆盖，删除本记录不删手环数据）。
-                pendingPushFileName?.let { name -> pendingPushBytes?.let { bytes -> recordPushSuccess(name, bytes) } }
-                _screen.value = AppScreen.Result
             }
             onError = { message ->
-                _pushState.update {
-                    it.copy(
-                        statusText = message,
-                        isTransferring = false,
-                        isFinished = true,
-                        isSuccess = false,
-                        errorMessage = message
-                    )
+                // 公式图推送阶段：单条失败不整体失败，累计后继续推下一条，收尾时汇总提示。
+                if (formulaPhaseActive) {
+                    formulaPhaseFailCount++
+                    Log.e("SnapNotesViewModel", "formula push fail: $message")
+                    _pushState.update {
+                        it.copy(
+                            statusText = "公式图推送失败，继续下一条",
+                            isTransferring = false,
+                            isFinished = false,
+                            isSuccess = false,
+                            errorMessage = message
+                        )
+                    }
+                } else {
+                    _pushState.update {
+                        it.copy(
+                            statusText = message,
+                            isTransferring = false,
+                            isFinished = true,
+                            isSuccess = false,
+                            errorMessage = message
+                        )
+                    }
+                    _screen.value = AppScreen.Result
                 }
-                _screen.value = AppScreen.Result
             }
             // 存储空间查询回包：异步落 StateFlow 供主页圆环展示。命中即自增 seq 让 refreshStorageInfo
             // 能判"回包是否在本轮到达"，未到达时自动补发一次兜首次冷拉起丢包竞态。
@@ -1177,6 +1217,10 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
     }
 
     fun cancelPush() {
+        formulaPushJob?.cancel()
+        formulaPushJob = null
+        formulaPhaseActive = false
+        pendingFormulaPlans = emptyList()
         pusher?.cancel()
         _pushState.update {
             it.copy(
@@ -1196,6 +1240,140 @@ class SnapNotesViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun retry() {
         pendingPushUri?.let { startPushFromUri(it) }
+    }
+
+    /**
+     * JSON 推送成功后的公式图串联入口：从 [pushBytes]（本次已成功推送的 JSON 字节）解析含 formulas 的条目，
+     * 逐条渲染 PNG 并用 [JsonFilePusher.pushFormula] 推给手环；全部完成后统一切结果页。
+     * 单条公式渲染/推送失败只累计计数，不中断整体；无公式条目则直接切结果页。
+     *
+     * 注意：不能依赖 [pendingPushBytes]——它会在 [recordPushSuccess] 中被清空，必须把字节传进来。
+     */
+    private fun launchFormulaPushIfAny(pushBytes: ByteArray) {
+        formulaPhaseActive = true
+        formulaPhaseFailCount = 0
+        _pushState.update {
+            it.copy(
+                statusText = "开始同步公式图",
+                isTransferring = true,
+                isFinished = false,
+                isSuccess = false,
+                errorMessage = null
+            )
+        }
+        formulaPushJob = viewModelScope.launch {
+            val plans = withContext(Dispatchers.Default) {
+                parseFormulaPlans(pushBytes)
+            }
+            if (plans.isEmpty()) {
+                formulaPhaseActive = false
+                pendingFormulaPlans = emptyList()
+                _screen.value = AppScreen.Result
+                return@launch
+            }
+            _pushState.update {
+                it.copy(statusText = "开始同步公式图 0/${plans.size}")
+            }
+            val renderer = formulaRenderer
+            if (renderer == null) {
+                formulaPhaseActive = false
+                pendingFormulaPlans = emptyList()
+                _pushState.update {
+                    it.copy(
+                        statusText = "公式图渲染未初始化，跳过公式同步",
+                        isTransferring = false,
+                        isFinished = true,
+                        isSuccess = true,
+                        errorMessage = null
+                    )
+                }
+                _screen.value = AppScreen.Result
+                return@launch
+            }
+            try {
+                Log.e("SnapNotesViewModel", "ALERT formula phase: ${plans.size} plans, renderer=${renderer != null}")
+                for ((i, plan) in plans.withIndex()) {
+                    if (!isActive) break
+                    _pushState.update {
+                        it.copy(statusText = "渲染公式图 ${i + 1}/${plans.size} · ${plan.subject}#${plan.id}")
+                    }
+                    val latexList = plan.formulas.map { raw -> RawToLatexConverter.convert(raw) }
+                    Log.e("SnapNotesViewModel", "ALERT rendering formula ${i + 1}/${plans.size}: ${plan.subject}#${plan.id} latex=$latexList")
+                    val png = renderer.render(latexList)
+                    if (png == null) {
+                        formulaPhaseFailCount++
+                        Log.e("SnapNotesViewModel", "formula render skip: ${plan.subject}#${plan.id}")
+                        continue
+                    }
+                    Log.e("SnapNotesViewModel", "ALERT formula rendered ${i + 1}/${plans.size}: ${plan.subject}#${plan.id} ${png.width}x${png.height} ${png.bytes.size}B")
+                    _pushState.update {
+                        it.copy(statusText = "同步公式图 ${i + 1}/${plans.size} · ${plan.subject}#${plan.id}")
+                    }
+                    val activePusher = pusher
+                    if (activePusher == null) {
+                        formulaPhaseFailCount++
+                        Log.e("SnapNotesViewModel", "pusher null, skip formula: ${plan.subject}#${plan.id}")
+                        continue
+                    }
+                    runCatching {
+                        Log.e("SnapNotesViewModel", "ALERT calling pushFormula: ${plan.subject}#${plan.id}")
+                        activePusher.pushFormula(plan.subject, plan.id, png.bytes, png.width, png.height)
+                        Log.e("SnapNotesViewModel", "ALERT pushFormula ok: ${plan.subject}#${plan.id}")
+                    }.onFailure { e ->
+                        formulaPhaseFailCount++
+                        Log.e("SnapNotesViewModel", "formula push fail: ${plan.subject}#${plan.id}", e)
+                    }
+                }
+            } finally {
+                formulaPhaseActive = false
+            }
+            val failCount = formulaPhaseFailCount
+            pendingFormulaPlans = emptyList()
+            _pushState.update {
+                it.copy(
+                    progress = 1.0,
+                    statusText = if (failCount == 0) {
+                        "知识点与公式图已同步"
+                    } else {
+                        "知识点已同步，$failCount 个公式图未同步"
+                    },
+                    isTransferring = false,
+                    isFinished = true,
+                    isSuccess = true,
+                    errorMessage = null,
+                    preview = "共同步 ${plans.size - failCount}/${plans.size} 个公式图"
+                )
+            }
+            _screen.value = AppScreen.Result
+        }
+    }
+
+    /** 解析 JSON，提取每条含非空 formulas 的条目公式计划；id 缺省/非 number 用数组下标 j+1（与手环 mergeParsedInto 一致）。 */
+    private fun parseFormulaPlans(bytes: ByteArray): List<FormulaPlan> {
+        if (bytes.isEmpty()) return emptyList()
+        return runCatching {
+            val root = JSONTokener(bytes.toString(Charsets.UTF_8)).nextValue() as? JSONObject ?: return emptyList()
+            val keys = root.keys()
+            val plans = mutableListOf<FormulaPlan>()
+            while (keys.hasNext()) {
+                val subject = keys.next()
+                val list = root.optJSONArray(subject) ?: continue
+                for (j in 0 until list.length()) {
+                    val item = list.optJSONObject(j) ?: continue
+                    val formulas = item.optJSONArray("formulas") ?: continue
+                    if (formulas.length() == 0) continue
+                    val rawId = item.opt("id")
+                    val id = if (rawId is Number) rawId.toInt() else (j + 1)
+                    val formulaList = (0 until formulas.length()).map { formulas.optString(it) }.filter { it.isNotBlank() }
+                    if (formulaList.isEmpty()) continue
+                    plans.add(FormulaPlan(subject, id, formulaList))
+                }
+            }
+            plans
+        }.getOrElse { e ->
+            Log.e("SnapNotesViewModel", "parse formula plans fail", e)
+            emptyList()
+        }
     }
 
     private suspend fun doPush(uri: Uri) {

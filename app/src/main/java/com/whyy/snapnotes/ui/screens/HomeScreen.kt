@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.whyy.snapnotes.logic.BandStorageInfoData
 import com.whyy.snapnotes.ui.components.AmadeusConfigCard
+import com.whyy.snapnotes.ui.components.FormulaTutorial
 import com.whyy.snapnotes.ui.components.JsonFileTutorial
 import com.whyy.snapnotes.ui.components.StorageRingCard
 import com.whyy.snapnotes.ui.viewmodel.ConnectionState
@@ -223,6 +224,8 @@ fun HomeScreen(
             }
 
             JsonFileTutorial(modifier = Modifier.fillMaxWidth())
+
+            FormulaTutorial(modifier = Modifier.fillMaxWidth())
 
             Spacer(Modifier.height(8.dp))
         }

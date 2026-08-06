@@ -1,5 +1,6 @@
 package com.whyy.snapnotes.ui.screens
 
+import android.graphics.BitmapFactory
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -8,6 +9,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -22,18 +24,27 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
+import com.whyy.snapnotes.logic.FormulaPngRenderer
+import com.whyy.snapnotes.logic.RawToLatexConverter
 import com.whyy.snapnotes.ui.viewmodel.EditorEntry
 import com.whyy.snapnotes.ui.viewmodel.EditorSubject
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -62,6 +73,7 @@ import top.yukonga.miuix.kmp.utils.pressable
 @Composable
 fun EditorScreen(
     subjects: List<EditorSubject>,
+    formulaRenderer: FormulaPngRenderer?,
     onAddSubject: () -> Unit,
     onRemoveSubject: (Int) -> Unit,
     onUpdateSubjectName: (Int, String) -> Unit,
@@ -122,6 +134,7 @@ fun EditorScreen(
                 SubjectCard(
                     subject = subject,
                     subjectIndex = subjectIndex,
+                    formulaRenderer = formulaRenderer,
                     onRemoveSubject = { onRemoveSubject(subjectIndex) },
                     onUpdateSubjectName = { onUpdateSubjectName(subjectIndex, it) },
                     onAddEntry = { onAddEntry(subjectIndex) },
@@ -175,6 +188,7 @@ fun EditorScreen(
 private fun SubjectCard(
     subject: EditorSubject,
     subjectIndex: Int,
+    formulaRenderer: FormulaPngRenderer?,
     onRemoveSubject: () -> Unit,
     onUpdateSubjectName: (String) -> Unit,
     onAddEntry: () -> Unit,
@@ -250,6 +264,7 @@ private fun SubjectCard(
                     subject.entries.forEachIndexed { entryIndex, entry ->
                         EntryCard(
                             entry = entry,
+                            formulaRenderer = formulaRenderer,
                             onRemoveEntry = { onRemoveEntry(entryIndex) },
                             onUpdateEntry = { onUpdateEntry(entryIndex, it) }
                         )
@@ -275,6 +290,7 @@ private fun SubjectCard(
 @Composable
 private fun EntryCard(
     entry: EditorEntry,
+    formulaRenderer: FormulaPngRenderer?,
     onRemoveEntry: () -> Unit,
     onUpdateEntry: (EditorEntry) -> Unit
 ) {
@@ -402,31 +418,38 @@ private fun EntryCard(
                     SmallTitle(text = "公式 (formulas)", modifier = Modifier.padding(top = 4.dp))
 
                     e.formulas.forEachIndexed { fIdx, formula ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            TextField(
-                                value = formula,
-                                onValueChange = { newValue ->
-                                    val newFormulas = e.formulas.toMutableList()
-                                    newFormulas[fIdx] = newValue
-                                    onUpdateEntry(e.copy(formulas = newFormulas))
-                                },
-                                modifier = Modifier.weight(1f),
-                                singleLine = true,
-                                label = "公式 ${fIdx + 1}"
-                            )
-                            if (e.formulas.size > 1) {
-                                TextButton(
-                                    text = "删除",
-                                    onClick = {
-                                        val newFormulas = e.formulas.toMutableList().also { it.removeAt(fIdx) }
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                TextField(
+                                    value = formula,
+                                    onValueChange = { newValue ->
+                                        val newFormulas = e.formulas.toMutableList()
+                                        newFormulas[fIdx] = newValue
                                         onUpdateEntry(e.copy(formulas = newFormulas))
-                                    }
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true,
+                                    label = "公式 ${fIdx + 1}"
                                 )
+                                if (e.formulas.size > 1) {
+                                    TextButton(
+                                        text = "删除",
+                                        onClick = {
+                                            val newFormulas = e.formulas.toMutableList().also { it.removeAt(fIdx) }
+                                            onUpdateEntry(e.copy(formulas = newFormulas))
+                                        }
+                                    )
+                                }
                             }
+                            FormulaPreview(
+                                raw = formula,
+                                renderer = formulaRenderer,
+                                modifier = Modifier.padding(start = 4.dp, top = 2.dp)
+                            )
                         }
                     }
 
@@ -465,6 +488,90 @@ private fun EmptyPlaceholderCard(text: String, icon: androidx.compose.ui.graphic
                 style = MiuixTheme.textStyles.body2,
                 color = MiuixTheme.colorScheme.onSurfaceVariantSummary
             )
+        }
+    }
+}
+
+private enum class FormulaPreviewState { Idle, Rendering, Ready, Failed }
+
+@Composable
+private fun FormulaPreview(
+    raw: String,
+    renderer: FormulaPngRenderer?,
+    modifier: Modifier = Modifier
+) {
+    var state by remember(raw) { mutableStateOf(FormulaPreviewState.Idle) }
+    var pngBytes by remember(raw) { mutableStateOf<ByteArray?>(null) }
+    var errorMessage by remember(raw) { mutableStateOf("") }
+
+    LaunchedEffect(raw, renderer) {
+        pngBytes = null
+        errorMessage = ""
+        if (raw.isBlank() || renderer == null) {
+            state = FormulaPreviewState.Idle
+            return@LaunchedEffect
+        }
+        state = FormulaPreviewState.Rendering
+        delay(400)
+        val latex = RawToLatexConverter.convert(raw)
+        val detail = renderer.renderDetail(listOf(latex), previewMode = true)
+        if (detail == null || detail.png == null) {
+            errorMessage = detail?.errorMessages?.firstOrNull() ?: "渲染失败"
+            state = FormulaPreviewState.Failed
+        } else {
+            pngBytes = detail.png.bytes
+            state = FormulaPreviewState.Ready
+        }
+    }
+
+    when (state) {
+        FormulaPreviewState.Idle -> Unit
+        FormulaPreviewState.Rendering -> {
+            Text(
+                text = "渲染中…",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                modifier = modifier
+            )
+        }
+        FormulaPreviewState.Failed -> {
+            Text(
+                text = "无法渲染：$errorMessage",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.error,
+                modifier = modifier
+            )
+        }
+        FormulaPreviewState.Ready -> {
+            val bytes = pngBytes ?: return
+            val bitmap = remember(bytes) {
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            }
+            if (bitmap != null) {
+                // 预览渲染已按内容收缩 + 放大字号（36px×2 分辨率），这里按内容尺寸显示并
+                // 封顶到屏宽：短公式保持大字号，超宽公式等比缩放进屏。不再强制拉伸。
+                val screenWidthDp = LocalConfiguration.current.screenWidthDp.dp
+                val displayWidth = minOf(bitmap.width.dp, screenWidthDp)
+                val displayHeight =
+                    displayWidth * (bitmap.height.toFloat() / bitmap.width.toFloat())
+                Box(
+                    modifier = modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(androidx.compose.ui.graphics.Color(0xFF161618))
+                        .padding(12.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = "公式渲染预览",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .width(displayWidth)
+                            .height(displayHeight)
+                    )
+                }
+            }
         }
     }
 }

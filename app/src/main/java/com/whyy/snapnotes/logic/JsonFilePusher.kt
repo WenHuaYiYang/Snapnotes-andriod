@@ -1,6 +1,8 @@
 package com.whyy.snapnotes.logic
 
+import android.util.Base64
 import android.util.Log
+import java.security.MessageDigest
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
@@ -181,7 +183,7 @@ class JsonFilePusher(private val conn: InterHandshake) {
 
             val totalChunks = chunks.size
             val totalBytes = jsonBytes.size.toLong()
-            Log.d(TAG, "file transfer start: $currentFileName ${totalBytes}B $totalChunks chunks")
+            Log.e(TAG, "ALERT json transfer start: $currentFileName ${totalBytes}B $totalChunks chunks")
             onProgress?.invoke(0.0, currentFileName, "准备发送")
 
             val start = FileMessagesToSend.StartTransfer(
@@ -189,36 +191,7 @@ class JsonFilePusher(private val conn: InterHandshake) {
                 totalChunks = totalChunks,
                 totalBytes = totalBytes
             )
-            // StartTransfer 下发加超时：InterHandshake.sendMessage 在握手 promise 卡死时
-            // 会永不 complete，裸 await 会让 pushFile 永久持锁、busy 永不复位，UI 停 0% 无日志。
-            sendWithTimeout(json.encodeToString(start), FIRST_PACKET_TIMEOUT_MS)
-
-            val ready = withTimeout(FIRST_PACKET_TIMEOUT_MS) { readyDeferred.await() }
-            currentChunkIndex = ready.nextChunkIndex.coerceIn(0, totalChunks - 1)
-
-            while (currentChunkIndex < totalChunks) {
-                val index = currentChunkIndex
-                sendChunk(index, totalChunks)
-                if (index < totalChunks - 1) {
-                    withTimeout(PER_CHUNK_TIMEOUT_MS) { nextChunkDeferred.await() }
-                    nextChunkDeferred = CompletableDeferred()
-                    currentChunkIndex = index + 1
-                } else {
-                    // 手环端即便最后一片也会先回 next_chunk；若回了就吃掉，未回也不阻塞。
-                    runCatching {
-                        withTimeout(PER_CHUNK_TIMEOUT_MS) { nextChunkDeferred.await() }
-                    }
-                    currentChunkIndex = totalChunks
-                }
-            }
-
-            onProgress?.invoke(0.99, currentFileName, "正在让手环落盘")
-            sendWithTimeout(json.encodeToString(FileMessagesToSend.TransferComplete()))
-            withTimeout(PER_CHUNK_TIMEOUT_MS) { finishedDeferred.await() }
-
-            onProgress?.invoke(1.0, currentFileName, "传输完成")
-            onSuccess?.invoke("传输完成")
-            resetState()
+            runTransfer(json.encodeToString(start), statusPrefix = "")
         } catch (e: TimeoutCancellationException) {
             failTransfer("传输超时，手环未响应")
         } catch (e: CancellationException) {
@@ -226,6 +199,118 @@ class JsonFilePusher(private val conn: InterHandshake) {
         } catch (e: Exception) {
             failTransfer("传输失败: ${e.message ?: e.javaClass.simpleName}")
         }
+    }
+
+    /**
+     * 推送一个知识点公式 PNG（startFormula 链路，与 JSON 推送共用同一状态机与 BLE 串行锁）。
+     *
+     * 协议与手环端 `src/app.ux` `_processFileMessage` 的 `startFormula` 分支对齐：
+     * startFormula（含 subject/id/filename/w/h）→ ready → d 分片（base64，≤10KB）→
+     * 每片 next_chunk → transferComplete → transfer_finished。
+     * PNG 先整体 base64 再按 ≤10KB 切字符串（不要先切二进制再编码），与需求文档第 2.3 节一致。
+     *
+     * 文件名规则与内置一致：md5(subject#id) 前 12 位 + ".png"。
+     */
+    suspend fun pushFormula(
+        subject: String,
+        id: Int,
+        pngBytes: ByteArray,
+        w: Int,
+        h: Int
+    ) = sendMutex.withLock {
+        if (busy) {
+            throw IllegalStateException("上一次传输尚未结束，请稍候或重试")
+        }
+        resetDeferreds()
+        busy = true
+        currentFileName = formulaFileName(subject, id)
+        currentChunkIndex = 0
+
+        try {
+            val base64Text = Base64.encodeToString(pngBytes, Base64.NO_WRAP)
+            if (base64Text.isEmpty()) throw IllegalArgumentException("公式图片为空")
+            chunks = chunkUtf8Text(base64Text, CHUNK_SIZE)
+            if (chunks.isEmpty()) throw IllegalArgumentException("公式图片为空")
+
+            val totalChunks = chunks.size
+            val totalBytes = pngBytes.size.toLong()
+            Log.e(TAG, "ALERT formula transfer start: $subject#$id -> $currentFileName ${totalBytes}B $totalChunks chunks w=${w}x${h}")
+            onProgress?.invoke(0.0, currentFileName, "准备发送公式图")
+
+            val start = FileMessagesToSend.StartFormula(
+                subject = subject,
+                id = id,
+                filename = currentFileName,
+                w = w,
+                h = h,
+                totalChunks = totalChunks,
+                totalBytes = totalBytes
+            )
+            runTransfer(
+                json.encodeToString(start),
+                statusPrefix = "公式图 $subject#$id · "
+            )
+        } catch (e: TimeoutCancellationException) {
+            failTransfer("传输超时，手环未响应")
+        } catch (e: CancellationException) {
+            failTransfer("传输已取消")
+        } catch (e: Exception) {
+            failTransfer("传输失败: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * 通用分片传输主流程（startFormula / startTransfer 共用）：
+     * 发首包 → 等 ready → 逐片发 d → 等 next_chunk → transferComplete → 等 transfer_finished。
+     * 每一步 await 都带超时，保证 busy 必在有限时间内复位。
+     */
+    private suspend fun runTransfer(startMessage: String, statusPrefix: String = "") {
+        // StartTransfer 下发加超时：InterHandshake.sendMessage 在握手 promise 卡死时
+        // 会永不 complete，裸 await 会让 pushFile 永久持锁、busy 永不复位，UI 停 0% 无日志。
+        Log.e(TAG, "runTransfer send start msg, waiting ready: $startMessage")
+        sendWithTimeout(startMessage, FIRST_PACKET_TIMEOUT_MS)
+        Log.e(TAG, "start message sent ok, waiting ready ...")
+
+        val ready = withTimeout(FIRST_PACKET_TIMEOUT_MS) { readyDeferred.await() }
+        Log.e(TAG, "ready recv nextChunkIndex=${ready.nextChunkIndex}, chunks=${chunks.size}")
+        currentChunkIndex = ready.nextChunkIndex.coerceIn(0, chunks.size - 1)
+
+        while (currentChunkIndex < chunks.size) {
+            val index = currentChunkIndex
+            Log.e(TAG, "sending chunk ${index + 1}/${chunks.size}")
+            sendChunk(index, chunks.size, statusPrefix)
+            if (index < chunks.size - 1) {
+                withTimeout(PER_CHUNK_TIMEOUT_MS) { nextChunkDeferred.await() }
+                nextChunkDeferred = CompletableDeferred()
+                currentChunkIndex = index + 1
+            } else {
+                // 手环端即便最后一片也会先回 next_chunk；若回了就吃掉，未回也不阻塞。
+                runCatching {
+                    withTimeout(PER_CHUNK_TIMEOUT_MS) { nextChunkDeferred.await() }
+                }
+                currentChunkIndex = chunks.size
+            }
+        }
+
+        onProgress?.invoke(0.99, currentFileName, "${statusPrefix}正在让手环写盘")
+        Log.e(TAG, "sending transferComplete")
+        sendWithTimeout(json.encodeToString(FileMessagesToSend.TransferComplete()))
+        withTimeout(PER_CHUNK_TIMEOUT_MS) { finishedDeferred.await() }
+        Log.e(TAG, "transfer_finished recv ok")
+
+        onProgress?.invoke(1.0, currentFileName, "${statusPrefix}传输完成")
+        onSuccess?.invoke("传输完成")
+        resetState()
+    }
+
+    /**
+     * 公式 PNG 文件名：md5(subject#id) 十六进制前 12 位 + ".png"。
+     * 与手环内置 gen_formulas.js 命名算法一致；纯 ASCII 哈希命名避免中文/# 进 URI。
+     */
+    fun formulaFileName(subject: String, id: Int): String {
+        val md = MessageDigest.getInstance("MD5")
+        val bytes = md.digest("$subject#$id".toByteArray(Charsets.UTF_8))
+        return bytes.take(6).joinToString("") { "%02x".format(it) } + ".png"
     }
 
     fun cancel() {
@@ -252,7 +337,7 @@ class JsonFilePusher(private val conn: InterHandshake) {
         withTimeout(timeoutMs) { conn.sendMessage(message).await() }
     }
 
-    private suspend fun sendChunk(index: Int, totalChunks: Int) {
+    private suspend fun sendChunk(index: Int, totalChunks: Int, statusPrefix: String = "") {
         val data = chunks[index]
         val message = FileMessagesToSend.DataChunk(
             chunkIndex = index,
@@ -264,9 +349,9 @@ class JsonFilePusher(private val conn: InterHandshake) {
         onProgress?.invoke(
             progress,
             currentFileName,
-            "分片 ${index + 1}/$totalChunks"
+            "${statusPrefix}分片 ${index + 1}/$totalChunks"
         )
-        Log.d(TAG, "file chunk ${index + 1}/$totalChunks sent ${data.toByteArray(Charsets.UTF_8).size}B")
+        Log.e(TAG, "chunk ${index + 1}/$totalChunks sent ${data.toByteArray(Charsets.UTF_8).size}B")
     }
 
     private fun completeReady(nextChunkIndex: Int) {
@@ -384,6 +469,19 @@ class JsonFilePusher(private val conn: InterHandshake) {
             val tag: String = "file",
             val stat: String = "startTransfer",
             val filename: String,
+            val totalChunks: Int,
+            val totalBytes: Long
+        ) : FileMessagesToSend()
+
+        @Serializable
+        data class StartFormula(
+            val tag: String = "file",
+            val stat: String = "startFormula",
+            val subject: String,
+            val id: Int,
+            val filename: String,
+            val w: Int,
+            val h: Int,
             val totalChunks: Int,
             val totalBytes: Long
         ) : FileMessagesToSend()

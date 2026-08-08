@@ -6,9 +6,13 @@
 
 闪念小抄是一套「手机 + 手环」配合的小工具：在手机上整理你的知识小抄，一键推到手环；之后无需掏手机，抬腕即可离线翻阅。背单词、记考点、备台词、放备忘——凡是「想随时瞄一眼」的内容，都可以搬上手腕。
 
+## 安装方法
+
+`.rpk`文件推荐使用[AstroBox](https://astrobox.online/)安装，同时我们官网也提供了下载链接[点我前往官方网站下载界面](https://snapnotes.dpdns.org/download)，你还可以前往项目的[realse(安卓)](https://github.com/WenHuaYiYang/Snapnotes-andriod/releases/tag/stable)、[realse(手环)](https://github.com/WenHuaYiYang/Snapnotes-band/releases/tag/stable)页下载
+
 ## 它能做什么
 
-**手机端（闪念小抄 App）[去下载](https://github.com/WenHuaYiYang/Snapnotes-andriod/releases/tag/stable)**
+**手机端（闪念小抄 App）**
 
 - **编辑器**：在手机上编写、整理你的知识点 JSON，分科目分条目管理。
 - **内置文件管理器**：直接浏览本机 JSON 文件，也支持从微信 / QQ / 文件管理器「打开方式 → 闪念小抄」推送。
@@ -17,7 +21,7 @@
 - **连接助手**：实时显示手环连接状态，断开自动重连；连接异常时进排障页，三步引导自助恢复。
 - **AI 助手（Amadeus）能力已备**：手机端可配置 LLM 接口（Base URL / API Key / Model），内置上下文管理菜单查看会话、本地测试发送、导出最近回复；手环端聊天界面上线后即可抬腕问答。
 
-**手环端（小米穿戴快应用）[去下载](https://github.com/WenHuaYiYang/Snapnotes-band/releases/tag/stable)**
+**手环端（小米穿戴快应用）**
 
 - **学科 / 知识点浏览**：抬腕按学科翻看知识点，长标题滚动展示，导入科目有角标。
 - **搜索**：在手环上直接搜索知识点标题，快速定位要复习的那一条。

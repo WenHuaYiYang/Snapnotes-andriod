@@ -1,7 +1,11 @@
 package com.whyy.snapnotes.ui.components
 
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.whyy.snapnotes.ui.viewmodel.VersionIncompatibleState
+import kotlin.system.exitProcess
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Text
@@ -27,7 +32,27 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 // 与 AboutScreen.kt 的 CONTACT_QQ 保持同值；这里独立成常量避免跨包暴露私有常量，
 // 改 QQ 号时记得两处同步。
 private const val CONTACT_DEV_QQ = "664249113"
-private const val CONTACT_DEV_HINT = "请联系开发者获取新版手环端（QQ $CONTACT_DEV_QQ）"
+private const val CONTACT_DEV_HINT = "未找到 QQ 应用，已复制开发者 QQ：$CONTACT_DEV_QQ"
+
+/** 调起 QQ 好友聊天窗口的 scheme 链接（QQ 应用内解析 mqqwpa://）。 */
+private fun buildQqChatUri(uin: String): Uri =
+    Uri.parse("mqqwpa://im/chat?chat_type=wpa&uin=$uin&version=1&src_type=web&web_src=oicqzone.com")
+
+/** 真正退出应用：关掉全部 Activity 并结束进程。 */
+private fun exitApp(context: Context) {
+    (context as? Activity)?.finishAffinity()
+    exitProcess(0)
+}
+
+/** 调起 QQ 聊天窗口；未安装 QQ 时回退为复制 QQ 号 + Toast 提示。 */
+private fun contactDeveloper(context: Context) {
+    val intent = Intent(Intent.ACTION_VIEW, buildQqChatUri(CONTACT_DEV_QQ))
+    runCatching { context.startActivity(intent) }.onFailure {
+        val clipboard = context.getSystemService(ClipboardManager::class.java)
+        clipboard?.setPrimaryClip(ClipData.newPlainText("开发者 QQ", CONTACT_DEV_QQ))
+        Toast.makeText(context, CONTACT_DEV_HINT, Toast.LENGTH_LONG).show()
+    }
+}
 
 @Composable
 fun VersionIncompatibleDialog(
@@ -73,20 +98,17 @@ fun VersionIncompatibleDialog(
             Row(modifier = Modifier.fillMaxWidth()) {
                 TextButton(
                     text = "退出应用",
-                    onClick = onDismiss,
+                    onClick = {
+                        onDismiss()
+                        exitApp(context)
+                    },
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(20.dp))
                 TextButton(
                     text = "联系开发者",
                     colors = ButtonDefaults.textButtonColorsPrimary(),
-                    onClick = {
-                        // 没有「官网」可跳：改为复制开发者 QQ 到剪贴板并 Toast 提示，
-                        // 用户据此去 QQ 找开发者拿新版手环端快应用包。
-                        val clipboard = context.getSystemService(ClipboardManager::class.java)
-                        clipboard?.setPrimaryClip(ClipData.newPlainText("开发者 QQ", CONTACT_DEV_QQ))
-                        Toast.makeText(context, CONTACT_DEV_HINT, Toast.LENGTH_LONG).show()
-                    },
+                    onClick = { contactDeveloper(context) },
                     modifier = Modifier.weight(1f)
                 )
             }
